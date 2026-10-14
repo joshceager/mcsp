@@ -1,32 +1,38 @@
 # One container: FastAPI backend + its managed Minecraft server.
 # ALL persistence via BIND MOUNTS (no named volumes, per project decision).
 #
-#   mkdir -p ./data && docker compose up -d
+#   mkdir -p data && docker compose up -d --build
 #
-# The backend provisions everything on first boot: downloads a JRE if missing,
-# runs the NeoForge installer for the pinned version, writes eula.txt and a
-# default server.properties, and auto-starts the server.
+# First boot provisions everything automatically: installs NeoForge for the
+# pinned MC version, writes eula.txt + default server.properties, installs the
+# pack's server-side mods, and auto-starts the server.
 #
-# Unavoidable host-side steps (documented in README):
-#   - open/forward TCP 8080 (API) and 25565 (Minecraft game port)
-#   - Docker itself must be installed on the host
+# Host-side steps the container cannot do for you: open/forward TCP 25565
+# (Minecraft) and 8080 (API), firewall rules, DNS.
 services:
   mcsp:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: mcsp
     ports:
       - "8080:8080"     # REST API (public + admin; admin fails closed w/o key)
       - "25565:25565"   # Minecraft server
     environment:
-      # Optional admin key. UNSET => admin endpoints return 503 (fail closed).
+      # Optional admin key. UNSET => admin endpoints fail closed (503).
       # Generate one: openssl rand -hex 32
       - MCSP_ADMIN_KEY=${MCSP_ADMIN_KEY:-}
-      # Server JVM heap (passed to run.sh / java -Xmx)
-      - MCSP_SERVER_MEMORY=4G
-      # Auto-start Minecraft server when the deployment starts (default true)
-      - MCSP_AUTO_START=true
-      # Auto-restart the server process if it crashes, with capped backoff
-      - MCSP_AUTO_RESTART=true
+      # Minecraft server JVM heap
+      - MCSP_MEM_GB=${MCSP_MEM_GB:-4}
+      # Minecraft game port (inside the container it is always 25565; use
+      # MCSP_MC_PORT only if you remap the published port differently)
+      - MCSP_MC_PORT=${MCSP_MC_PORT:-25565}
+      # Auto-start the Minecraft server when the backend starts (default true)
+      - MCSP_AUTO_START=${MCSP_AUTO_START:-true}
+      # Auto-restart the server process if it crashes, capped exponential backoff
+      - MCSP_AUTO_RESTART=${MCSP_AUTO_RESTART:-true}
+      # Optional: the address players should join (published in /api/v1/status)
+      # - MCSP_JOIN_ADDRESS=play.example.com
     volumes:
       # Bind mount: ALL server data (world, mods, config, backups, manifest,
       # sqlite job history) persists here on the host filesystem.

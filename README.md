@@ -107,7 +107,7 @@ Electron `safeStorage` where available.
 ```
 backend/     FastAPI app (supervisor, bootstrap, packmgr, jobs, sqlite store) + tests
 client/      Electron client (main-process services, React renderer, tests)
-docker-compose.yml, backend/Dockerfile
+Dockerfile (repo root), docker-compose.yml
 docs/        API + manifest format reference
 .github/workflows/ci.yml
 ```
