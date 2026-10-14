@@ -13,7 +13,7 @@ import { ensureJava } from "./services/java";
 import { validateManifest } from "../shared/manifest-validate";
 
 const settingsStore = new SettingsStore();
-const auth = new McAuth({ storeDir: join(app.getPath("home"), ".mcsp") });
+let auth = new McAuth({ storeDir: join(app.getPath("home"), ".mcsp"), clientId: "" });
 let api: ApiClient;
 let sync: SyncEngine | null = null;
 let provision: ProvisionService | null = null;
@@ -77,6 +77,8 @@ async function createWindow(): Promise<void> {
 
 app.whenReady().then(async () => {
   await settingsStore.load();
+  auth = new McAuth({ storeDir: join(app.getPath("home"), ".mcsp"),
+    clientId: settingsStore.get().azureClientId });
   await auth.load();
   api = new ApiClient(() => settingsStore.get());
   rebuildServices();
@@ -92,6 +94,11 @@ app.on("window-all-closed", () => {
 ipcMain.handle("settings:get", async () => settingsStore.get());
 ipcMain.handle("settings:set", async (_e, patch: Partial<ClientSettings>) => {
   await settingsStore.set(patch);
+  if (typeof patch.azureClientId === "string") {
+    auth = new McAuth({ storeDir: join(app.getPath("home"), ".mcsp"),
+      clientId: patch.azureClientId });
+    await auth.load();
+  }
   return settingsStore.get();
 });
 

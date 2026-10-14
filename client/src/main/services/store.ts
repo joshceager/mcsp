@@ -17,6 +17,7 @@ export interface ClientSettings {
   adminKey: string;           // legacy single-server field (kept for migration)
   gameDir: string;            // legacy single-instance dir (kept for migration only)
   playerName: string;
+  azureClientId: string;      // Azure app registration id for Microsoft sign-in
   autoStartServer: boolean;   // start server when admin panel opens (if permitted)
   connections: SavedConnection[];
   activeConnectionId: string | null;
@@ -27,6 +28,7 @@ const DEFAULTS: ClientSettings = {
   adminKey: "",
   gameDir: "",
   playerName: "Player",
+  azureClientId: "",
   autoStartServer: false,
   connections: [],
   activeConnectionId: null,

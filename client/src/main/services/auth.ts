@@ -9,9 +9,12 @@ import { promises as fs } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 
-// Public first-party client id used by many open-source launchers (Prism's
-// published id); Azure public apps need no secret for the device flow.
-const CLIENT_ID = "c868457f-24b6-4c5d-9320-88955b7d556e";
+// Azure AD application (client) id. The device flow needs no client secret,
+// but the app registration MUST exist and allow public client flows.
+// The id is user-provided (see resolveClientId) — every launcher must register
+// its own app: portal.azure.com -> Microsoft Entra ID -> App registrations ->
+// New registration ("Accounts in any organizational directory and personal
+// Microsoft accounts") -> Authentication -> enable "Allow public client flows".
 const TENANT = "consumers";
 const SCOPES = "XboxLive.signin offline_access";
 
@@ -50,6 +53,8 @@ export interface DeviceCodeStart {
 interface McAuthDeps {
   /** Where to persist the cached profile (auth.json). */
   storeDir: string;
+  /** Azure application (client) id for the device flow. */
+  clientId: string;
   /** Status callback (shown in the UI / log). */
   onStatus?: (msg: string) => void;
 }
@@ -114,12 +119,36 @@ export class McAuth {
 
   /** Step 1: request a device code the user will enter at microsoft.com/link. */
   async startDeviceLogin(): Promise<DeviceCodeStart> {
-    const r = await postForm(DEVICE_URL, { client_id: CLIENT_ID, scope: SCOPES });
+    if (!this.deps.clientId) {
+      throw new Error(
+        "no Azure client id configured — create a free app registration at " +
+        "portal.azure.com (Entra ID -> App registrations, account type " +
+        "\"any organizational directory and personal Microsoft accounts\", " +
+        "public client flows enabled) and paste its Application (client) ID here",
+      );
+    }
+    const r = await postForm(DEVICE_URL, { client_id: this.deps.clientId, scope: SCOPES });
     const j = r.json as {
       device_code?: string; user_code?: string; verification_uri?: string;
       message?: string; interval?: number; expires_in?: number; error?: string;
     };
-    if (!r.ok || !j.device_code) throw new Error(`device code request failed: ${errFrom(j)}`);
+    if (!r.ok || !j.device_code) {
+      const msg = errFrom(j);
+      if (/700016/.test(msg)) {
+        throw new Error(
+          `device code request failed: the client id ${this.deps.clientId} is not a valid ` +
+          `app registration (AADSTS700016). Register an app at portal.azure.com and set its ` +
+          `Application (client) ID in the account bar.`,
+        );
+      }
+      if (/7000218/.test(msg)) {
+        throw new Error(
+          "device code request failed: the app registration must allow public client flows " +
+          "(AADSTS7000218) — enable it under Authentication in the Azure portal.",
+        );
+      }
+      throw new Error(`device code request failed: ${msg}`);
+    }
     return {
       deviceCode: j.device_code!,
       userCode: j.user_code!,
@@ -138,7 +167,7 @@ export class McAuth {
       await new Promise((r) => setTimeout(r, wait));
       const r = await postForm(TOKEN_URL, {
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        client_id: CLIENT_ID,
+        client_id: this.deps.clientId,
         device_code: start.deviceCode,
       });
       const j = r.json as {
@@ -221,7 +250,7 @@ export class McAuth {
     if (!p?.msRefreshToken) throw new Error("no stored refresh token; sign in again");
     const r = await postForm(TOKEN_URL, {
       grant_type: "refresh_token",
-      client_id: CLIENT_ID,
+      client_id: this.deps.clientId,
       refresh_token: p.msRefreshToken,
       scope: SCOPES,
     });

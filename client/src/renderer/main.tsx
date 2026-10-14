@@ -147,6 +147,9 @@ function AccountBar() {
   const [login, setLogin] = useState<{ userCode: string; verificationUri: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [cidLoaded, setCidLoaded] = useState(false);
+  const [cidSaved, setCidSaved] = useState(false);
 
   useEffect(() => {
     let stop = false;
@@ -167,6 +170,11 @@ function AccountBar() {
     return () => { stop = true; };
   }, [login !== null]);
 
+  useEffect(() => {
+    if (cidLoaded) return;
+    window.mcsp.settings.get().then((s) => { setClientId(s.azureClientId ?? ""); setCidLoaded(true); });
+  }, [cidLoaded]);
+
   async function begin() {
     setBusy(true); setErr("");
     try {
@@ -176,16 +184,26 @@ function AccountBar() {
     finally { setBusy(false); }
   }
 
-  return h("div", { className: "panel row account" },
-    status?.signedIn
-      ? h("span", null, `Signed in: `, h("b", null, status.name ?? "?"))
-      : login
-        ? h("span", null,
-            "Go to ", h("a", { href: login.verificationUri, target: "_blank", rel: "noreferrer" }, login.verificationUri),
-            " and enter code ", h("b", null, login.userCode), " …")
-        : h("button", { onClick: begin, disabled: busy }, busy ? "…" : "Sign in with Microsoft"),
-    status?.expiresSoon && h("span", { className: "muted" }, "(session expired — will refresh on next launch)"),
-    status?.signedIn && h("button", { className: "secondary", onClick: () => window.mcsp.auth.signOut().then(() => window.mcsp.auth.status().then(setStatus)) }, "Sign out"),
+  return h("div", { className: "panel account" },
+    h("div", { className: "row" },
+      status?.signedIn
+        ? h("span", null, "Signed in: ", h("b", null, status.name ?? "?"))
+        : login
+          ? h("span", null,
+              "Go to ", h("a", { href: login.verificationUri, target: "_blank", rel: "noreferrer" }, login.verificationUri),
+              " and enter code ", h("b", null, login.userCode), " …")
+          : h("button", { onClick: begin, disabled: busy }, busy ? "…" : "Sign in with Microsoft"),
+      status?.expiresSoon && h("span", { className: "muted" }, "(session expired — will refresh on next launch)"),
+      status?.signedIn && h("button", { className: "secondary", onClick: () => window.mcsp.auth.signOut().then(() => window.mcsp.auth.status().then(setStatus)) }, "Sign out")),
+    h("div", { className: "row", style: { marginTop: 8 } },
+      h("span", { className: "muted" }, "Azure client ID:"),
+      h("input", { value: clientId, onChange: (e) => setClientId(e.target.value),
+        placeholder: "Application (client) ID from portal.azure.com", size: 40 }),
+      h("button", { className: "secondary", onClick: async () => {
+        await window.mcsp.settings.set({ azureClientId: clientId.trim() });
+        setCidSaved(true); setTimeout(() => setCidSaved(false), 1500);
+      } }, "Save"),
+      cidSaved && h("span", { className: "ok" }, "saved")),
     err && h("div", { className: "err" }, err));
 }
 
