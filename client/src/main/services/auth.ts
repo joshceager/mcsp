@@ -9,12 +9,12 @@ import { promises as fs } from "fs";
 import { createHash } from "crypto";
 import { join } from "path";
 
-// Azure AD application (client) id. The device flow needs no client secret,
-// but the app registration MUST exist and allow public client flows.
-// The id is user-provided (see resolveClientId) — every launcher must register
-// its own app: portal.azure.com -> Microsoft Entra ID -> App registrations ->
-// New registration ("Accounts in any organizational directory and personal
-// Microsoft accounts") -> Authentication -> enable "Allow public client flows".
+// Azure AD application (client) id. Defaults to Prism Launcher's published
+// MSA client id (from their CMakeLists.txt) so sign-in works out of the box;
+// override via the account bar / azureClientId setting if you register your
+// own app (portal.azure.com -> Entra ID -> App registrations -> enable
+// public client flows).
+export const DEFAULT_CLIENT_ID = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb";
 const TENANT = "consumers";
 const SCOPES = "XboxLive.signin offline_access";
 
