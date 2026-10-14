@@ -89,10 +89,26 @@ shown in the UI.
 ```bash
 cd client
 npm install
-npm run dev          # Electron app
+npm run dev          # build main/preload/renderer, then launch Electron
 npm run typecheck && npx vitest run   # checks + tests
 npm run dist         # electron-builder: NSIS / dmg / AppImage per-platform
 ```
+
+### Linux / WSL system dependencies
+
+Electron needs GUI shared libraries that a fresh Debian/Ubuntu (incl. WSL)
+install does not ship. If `npm run dev` fails with
+`error while loading shared libraries: libnss3.so`, install them once:
+
+```bash
+sudo apt install libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+  libatspi2.0-0 libgtk-3-0 libglib2.0-0 libcairo2 libpango-1.0-0 \
+  libcups2 libdbus-1-3 libdrm2 libgbm1 libasound2 libxcomposite1 \
+  libxdamage1 libxfixes3 libxrandr2 libxkbcommon0
+```
+
+(On Ubuntu 24.04+, `libasound2` may need to be `libasound2t64`.)
+WSL users: WSLg provides the display server, so the window opens normally.
 
 Connect: enter the server API base URL (e.g. `http://your-host:8080`). The
 client fetches the manifest, plans a diff against the local instance, downloads
