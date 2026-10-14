@@ -9,7 +9,8 @@ export interface LaunchOptions {
   gameDir: string;
   manifest: Manifest;
   javaBin: string;
-  playerName: string;
+  /** Authenticated Minecraft profile (online mode). */
+  profile: { name: string; uuid: string; accessToken: string };
   extraArgs?: string[];
   onLog?: (line: string) => void;
 }
@@ -28,7 +29,7 @@ export class Launcher {
 
   async launch(opts: LaunchOptions): Promise<LaunchHandle> {
     if (this.isRunning()) throw new Error("a Minecraft client is already running");
-    const { gameDir, manifest, javaBin, playerName } = opts;
+    const { gameDir, manifest, javaBin, profile } = opts;
     const profileName = `neoforge-${manifest.minecraftVersion}`;
     const gameJarDir = join(gameDir, "versions", profileName);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -50,7 +51,10 @@ export class Launcher {
       "--fml.forgeVersion", "", // NeoForge has no separate forge version
       "--fml.fmlVersion", "1",
       "--version", profileName,
-      "--username", playerName,
+      "--username", profile.name,
+      "--uuid", profile.uuid,
+      "--accessToken", profile.accessToken,
+      "--userType", "msa",
       "--assetIndex", manifest.minecraftVersion,
     ];
     for (const extra of opts.extraArgs ?? []) args.push(extra);

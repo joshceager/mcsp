@@ -2,6 +2,18 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 const api = {
+  auth: {
+    status: () => ipcRenderer.invoke("auth:status"),
+    startLogin: () => ipcRenderer.invoke("auth:startLogin"),
+    loginStatus: () => ipcRenderer.invoke("auth:loginStatus"),
+    signOut: () => ipcRenderer.invoke("auth:signOut"),
+  },
+  connections: {
+    list: () => ipcRenderer.invoke("conn:list"),
+    save: (patch: unknown) => ipcRenderer.invoke("conn:save", patch),
+    delete: (id: string) => ipcRenderer.invoke("conn:delete", id),
+    select: (id: string) => ipcRenderer.invoke("conn:select", id),
+  },
   settings: {
     get: () => ipcRenderer.invoke("settings:get"),
     set: (patch: unknown) => ipcRenderer.invoke("settings:set", patch),

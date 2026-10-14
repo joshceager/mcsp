@@ -1,4 +1,4 @@
-/** REST client for a single MCSP backend (the trusted server the player chose).
+/** REST client for the active MCSP backend (the trusted server the player chose).
  *  Plain HTTP is supported; reverse proxies (Caddy/Tailscale) sit in front.
  */
 import type { PackView, ServerStatus, JobView } from "../../shared/types";
@@ -13,16 +13,25 @@ export class ApiError extends Error {
 export class ApiClient {
   constructor(private getSettings: () => ClientSettings) {}
 
+  private active(): { url: string; adminKey: string } | null {
+    const s = this.getSettings();
+    const conn = s.connections.find((c) => c.id === s.activeConnectionId);
+    if (conn) return { url: conn.serverUrl, adminKey: conn.adminKey };
+    // legacy fallback (pre-multi-connection settings)
+    if (s.serverUrl) return { url: s.serverUrl, adminKey: s.adminKey };
+    return null;
+  }
+
   private base(): string {
-    const url = this.getSettings().serverUrl.replace(/\/+$/, "");
-    if (!url) throw new ApiError(0, "no_server", "No server configured");
-    return url;
+    const a = this.active();
+    if (!a) throw new ApiError(0, "no_server", "No server selected");
+    return a.url.replace(/\/+$/, "");
   }
 
   private headers(admin = false): Record<string, string> {
     const h: Record<string, string> = { "Content-Type": "application/json" };
-    const s = this.getSettings();
-    if (admin && s.adminKey) h["Authorization"] = `Bearer ${s.adminKey}`;
+    const a = this.active();
+    if (admin && a?.adminKey) h["Authorization"] = `Bearer ${a.adminKey}`;
     return h;
   }
 
