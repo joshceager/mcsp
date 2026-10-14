@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>MCSP Launcher</title>
+    <style>
+      body { margin:0; font: 14px/1.5 system-ui, sans-serif; background:#12151a; color:#e6e9ee; }
+      #root { padding: 16px; }
+      button { background:#2b6cb0; color:#fff; border:0; border-radius:6px; padding:8px 14px; cursor:pointer; margin:2px; }
+      button:disabled { opacity:.5; cursor:default; }
+      button.danger { background:#b02b2b; }
+      input, select { background:#1b2028; color:#e6e9ee; border:1px solid #2c3441; border-radius:6px; padding:6px 8px; }
+      table { border-collapse: collapse; width:100%; margin-top:8px; }
+      th, td { text-align:left; padding:6px 10px; border-bottom:1px solid #2c3441; }
+      .tag { border-radius:10px; padding:1px 8px; font-size:12px; }
+      .tag.client { background:#1f5e38; } .tag.server { background:#5e2a1f; } .tag.both { background:#1f4e5e; }
+      .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .panel { background:#161a21; border:1px solid #2c3441; border-radius:10px; padding:14px; margin-bottom:14px; }
+      pre { background:#0d1015; padding:10px; border-radius:8px; max-height:260px; overflow:auto; font-size:12px; }
+      h2 { margin: 4px 0 10px; }
+      .ok { color:#7ddc9a; } .err { color:#ff8a8a; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

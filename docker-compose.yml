@@ -1,0 +1,36 @@
+# One container: FastAPI backend + its managed Minecraft server.
+# ALL persistence via BIND MOUNTS (no named volumes, per project decision).
+#
+#   mkdir -p ./data && docker compose up -d
+#
+# The backend provisions everything on first boot: downloads a JRE if missing,
+# runs the NeoForge installer for the pinned version, writes eula.txt and a
+# default server.properties, and auto-starts the server.
+#
+# Unavoidable host-side steps (documented in README):
+#   - open/forward TCP 8080 (API) and 25565 (Minecraft game port)
+#   - Docker itself must be installed on the host
+services:
+  mcsp:
+    build: ./backend
+    container_name: mcsp
+    ports:
+      - "8080:8080"     # REST API (public + admin; admin fails closed w/o key)
+      - "25565:25565"   # Minecraft server
+    environment:
+      # Optional admin key. UNSET => admin endpoints return 503 (fail closed).
+      # Generate one: openssl rand -hex 32
+      - MCSP_ADMIN_KEY=${MCSP_ADMIN_KEY:-}
+      # Server JVM heap (passed to run.sh / java -Xmx)
+      - MCSP_SERVER_MEMORY=4G
+      # Auto-start Minecraft server when the deployment starts (default true)
+      - MCSP_AUTO_START=true
+      # Auto-restart the server process if it crashes, with capped backoff
+      - MCSP_AUTO_RESTART=true
+    volumes:
+      # Bind mount: ALL server data (world, mods, config, backups, manifest,
+      # sqlite job history) persists here on the host filesystem.
+      - ./data:/data
+    restart: unless-stopped
+    tty: true
+    stdin_open: true

@@ -1,0 +1,12 @@
+appId: org.mcsp.launcher
+productName: MCSP Launcher
+directories:
+  output: release
+files:
+  - dist/**
+  - package.json
+extraMetadata:
+  main: dist/main/main.js
+linux: { category: Game, target: [AppImage, deb] }
+mac: { target: [dmg, zip] }
+win: { target: [nsis] }

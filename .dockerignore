@@ -1,0 +1,7 @@
+**/__pycache__
+**/*.pyc
+backend/tests
+client/node_modules
+client/dist
+data
+.git
