@@ -17,7 +17,6 @@ export interface ClientSettings {
   adminKey: string;           // legacy single-server field (kept for migration)
   gameDir: string;            // legacy single-instance dir (kept for migration only)
   playerName: string;
-  azureClientId: string;      // Azure app registration id for Microsoft sign-in
   autoStartServer: boolean;   // start server when admin panel opens (if permitted)
   connections: SavedConnection[];
   activeConnectionId: string | null;
@@ -28,7 +27,6 @@ const DEFAULTS: ClientSettings = {
   adminKey: "",
   gameDir: "",
   playerName: "Player",
-  azureClientId: "",
   autoStartServer: false,
   connections: [],
   activeConnectionId: null,
@@ -55,6 +53,9 @@ export class SettingsStore {
   /** Migrate legacy single-server settings into the connections list. */
   private migrate(s: ClientSettings): ClientSettings {
     const out: ClientSettings = { ...DEFAULTS, ...s, connections: s.connections ?? [] };
+    // azureClientId was a short-lived user-facing setting; drop any stale value
+    // so it cannot override the working built-in client id.
+    if ("azureClientId" in out) delete (out as unknown as Record<string, unknown>).azureClientId;
     if (out.connections.length === 0 && out.serverUrl) {
       const conn: SavedConnection = {
         id: randomUUID(),
