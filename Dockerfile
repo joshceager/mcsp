@@ -3,7 +3,11 @@
 # container is all that's needed — no docker socket, no privileged mode.
 #
 # Build context is the REPO ROOT (docker compose build uses context: .).
-FROM eclipse-temurin:21-jre
+# Pinned to the Ubuntu 24.04 (noble) variant. The floating 21-jre tag was
+# re-pushed with a Python 3.14 base, where pydantic-core has no prebuilt
+# wheels and the source build fails (no `cc` in this image). noble ships
+# Python 3.12, matching CI, so all wheels install binary.
+FROM eclipse-temurin:21-jre-noble
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-pip python3-venv curl ca-certificates \
