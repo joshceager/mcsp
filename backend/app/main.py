@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 
+import anyio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -61,6 +62,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 async def _lifespan(app: FastAPI):
     settings = app.state.settings
     log.info("MCSP backend starting; data dir %s", settings.data_dir)
+
+    # sse-starlette awaits a *module-global* shutdown Event inside every SSE
+    # response, and creates it lazily in whichever event loop happens to serve
+    # the first stream. Any second event loop in the same process (a --reload
+    # restart, TestClient, a test that boots a second server) would then await
+    # an Event owned by a dead loop and abort the stream with
+    # "RuntimeError: ... is bound to a different event loop", which the client
+    # can only see as a truncated response. Bind it here instead, inside the
+    # loop that will actually serve the streams.
+    from sse_starlette.sse import AppStatus
+
+    AppStatus.should_exit = False
+    AppStatus.should_exit_event = anyio.Event()
 
     store = Store(settings.db_path)
     app.state.store = store

@@ -50,6 +50,13 @@ class Settings:
         self.auto_restart: bool = _bool(env, "MCSP_AUTO_RESTART", True)
         self.auto_restart_max: int = int(env.get("MCSP_AUTO_RESTART_MAX", "5"))
         self.auto_restart_backoff_s: int = int(env.get("MCSP_AUTO_RESTART_BACKOFF_S", "10"))
+        # A crash counts against the auto-restart budget until the server has
+        # stayed up this long; only then is the budget considered fresh again.
+        self.auto_restart_stable_s: int = int(env.get("MCSP_AUTO_RESTART_STABLE_S", "300"))
+        # The NeoForge installer downloads + patches the whole server; on a slow
+        # link this takes a while, and being killed half way leaves an install
+        # that cannot start (see Bootstrap.provisioning_problem).
+        self.install_timeout_s: int = int(env.get("MCSP_INSTALL_TIMEOUT_S", "1800"))
         # Address players should use to join. If unset, the API omits it and the
         # owner is expected to publish their own host/port.
         self.join_address: str | None = (env.get("MCSP_JOIN_ADDRESS") or "").strip() or None

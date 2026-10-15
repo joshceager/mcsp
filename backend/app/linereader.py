@@ -18,11 +18,32 @@ class LineRing:
         self._lines: deque[str] = deque(maxlen=maxlen)
         self._lock = threading.Lock()
         self._waiters: list[threading.Event] = []
+        self._total = 0
 
     def append(self, line: str) -> None:
         with self._lock:
             self._lines.append(line)
+            self._total += 1
         self._notify()
+
+    def snapshot(self) -> int:
+        """A mark for "everything appended so far"; feed it to :meth:`since`.
+
+        Used to scope a read to one server process: the ring is shared between
+        every run of the managed server, so a marker like the readiness line
+        ("Done (...)") from a *previous* process must never be mistaken for the
+        current one's.
+        """
+        with self._lock:
+            return self._total
+
+    def since(self, mark: int) -> list[str]:
+        """Lines appended after *mark* (clamped to what the ring still holds)."""
+        with self._lock:
+            if mark >= self._total:
+                return []
+            n = min(self._total - mark, len(self._lines))
+            return list(self._lines)[-n:] if n else []
 
     def _notify(self) -> None:
         for ev in list(self._waiters):

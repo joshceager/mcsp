@@ -1,12 +1,20 @@
 """SSE endpoint tests: the streams must deliver data *and* leave the API usable.
 
-Regression guard: `wait_for_lines` is a threading primitive. Calling it inline
-inside the ASGI generator blocked the event loop and made every other request on
-the deployment take seconds (a live console made the whole backend look dead).
+Regression guards:
+- `wait_for_lines` is a threading primitive. Calling it inline inside the ASGI
+  generator blocked the event loop and made every other request on the
+  deployment take seconds (a live console made the whole backend look dead).
+- sse-starlette keeps its shutdown Event in a *module global*, created lazily in
+  whichever event loop served the first stream. A second loop in the same
+  process therefore aborted its streams with "RuntimeError: ... is bound to a
+  different event loop"; a client only sees a truncated response
+  ("incomplete chunked read"). The app now binds that event per loop in its
+  lifespan.
 """
 
 from __future__ import annotations
 
+import contextlib
 import socket
 import sys
 import threading
@@ -27,8 +35,8 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-@pytest.fixture()
-def live_server(tmp_path):
+@contextlib.contextmanager
+def _live_server(tmp_path):
     """A real uvicorn server in a thread (the SSE paths need real ASGI streaming)."""
     from app.config import Settings
     from app.main import create_app
@@ -62,6 +70,13 @@ def live_server(tmp_path):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+@pytest.fixture()
+def live_server(tmp_path):
+    """One server (one event loop) per test."""
+    with _live_server(tmp_path) as base:
+        yield base
 
 
 def _read_stream(base: str, path: str, headers: dict, out: list, stop: threading.Event) -> None:
@@ -119,3 +134,27 @@ def test_status_stream_reports_state_and_stays_responsive(live_server):
     elapsed = time.perf_counter() - t0
     stop.set()
     assert elapsed < 1.0, f"status request took {elapsed:.2f}s with the status stream open"
+
+
+def test_sse_works_in_a_second_event_loop(tmp_path):
+    """Two servers (two event loops) in one process: the second must stream too.
+
+    This is the shape that used to fail: the first stream created
+    sse-starlette's module-global exit Event in loop #1, so loop #2 awaited an
+    Event owned by a dead loop and every response was torn down mid-stream.
+    """
+    for index in range(2):
+        with _live_server(tmp_path) as base:
+            received: list[str] = []
+            stop = threading.Event()
+            t = threading.Thread(
+                target=_read_stream,
+                args=(base, "/api/v1/status/stream", {}, received, stop),
+                daemon=True,
+            )
+            t.start()
+            deadline = time.time() + 10
+            while time.time() < deadline and not any("state" in l for l in received):
+                time.sleep(0.2)
+            stop.set()
+            assert any("state" in l for l in received), f"loop #{index + 1}: {received[:3]}"

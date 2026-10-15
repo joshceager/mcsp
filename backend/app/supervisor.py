@@ -9,6 +9,24 @@ Responsibilities (from the approved design):
 - forward console commands to the running process's stdin
 - serialize lifecycle operations so overlapping ops cannot corrupt state
 
+Crash policy (why the two exits are treated differently)
+- A process that dies *before* it ever reaches readiness is a **startup
+  failure**: the install or the configuration is wrong, and retrying the exact
+  same command cannot fix it. It is reported once, with the reason and the
+  process's own last output, and is *not* auto-restarted. (Restarting it was
+  what turned one clear "your install is broken" into an endless crash log.)
+- A process that reached readiness and *then* died is a **runtime crash**:
+  restarted with capped exponential backoff. The cap counts consecutive
+  crashes and is only cleared by an operator start, or once the server has
+  stayed up for ``auto_restart_stable_s`` — a server that boots and immediately
+  dies therefore still hits the cap instead of looping forever.
+
+Process scoping
+Every spawn gets an epoch. The ring buffer is shared by all runs of the server,
+so a watcher/monitor belonging to a superseded process must never touch the
+current state, pid, or readiness: it returns immediately. Readiness is only
+ever read from lines the *current* process appended.
+
 The supervisor is process-based and thread-safe; FastAPI routes call into it
 from the threadpool.
 """
@@ -33,9 +51,19 @@ log = logging.getLogger("mcsp.supervisor")
 
 STATE_INSTALLING = "installing"
 
+# How long start() waits for the readiness marker before answering "still
+# starting"; the monitor keeps watching afterwards, so a slow first boot still
+# flips to running when it gets there.
+READY_TIMEOUT_S = 180.0
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_ready_line(line: str) -> bool:
+    """The server's own "Done (1.234s)! For help, type "help"" readiness line."""
+    return "Done (" in line and "help" in line
 
 
 class MinecraftServerSupervisor:
@@ -59,6 +87,9 @@ class MinecraftServerSupervisor:
         self._last_error: str | None = None
         self._installing_message: str | None = None
         self._closed = False
+        self._epoch = 0                # increments on every spawn
+        self._ready_epoch = -1         # epoch whose process reached readiness
+        self._restart_cancel = threading.Event()
 
     # ------------------------------------------------------------------ state
 
@@ -101,8 +132,6 @@ class MinecraftServerSupervisor:
             self._state_since = _now()
             if state == "error":
                 self._last_error = detail or self._last_error
-            if state == "running":
-                self._auto_restart_count = 0
         log.info("state -> %s (%s)", state, detail or "")
         if self.on_state_change:
             try:
@@ -125,6 +154,10 @@ class MinecraftServerSupervisor:
             return True, "ok"
 
     def start(self) -> dict:
+        """Start the managed server (operator/API initiated)."""
+        return self._start(manual=True)
+
+    def _start(self, manual: bool) -> dict:
         """Start the managed Minecraft server. Raises RuntimeError on invalid
         state transitions. Blocking (runs bootstrap + waits for readiness up
         to a bounded time)."""
@@ -135,6 +168,10 @@ class MinecraftServerSupervisor:
             self._stop_requested = False
             self._graceful_stop_seen = False
             self._last_error = None
+            self._restart_cancel.clear()
+            if manual:
+                # An operator asked for this start; give the crash budget back.
+                self._auto_restart_count = 0
             self._set_state("starting")
         try:
             cmd = self._build_command()
@@ -145,7 +182,8 @@ class MinecraftServerSupervisor:
         if result.get("state") == "error":
             # Process died during the startup window; fail the start job.
             raise RuntimeError(
-                f"server process exited during startup (code {result.get('exitCode')})"
+                f"server process exited during startup (code {result.get('exitCode')}): "
+                f"{self._last_error or 'see the console log'}"
             )
         return result
 
@@ -190,87 +228,192 @@ class MinecraftServerSupervisor:
             self._proc = proc
             self._pid = proc.pid
             self._started_at = _now()
+            self._epoch += 1
+            epoch = self._epoch
         stamp = time.strftime("%Y%m%d-%H%M%S")
         reader = ProcessLineReader(
             proc.stdout, self._ring, s.logs_dir / f"console-{stamp}.log", prefix="[server] "
         )
         reader.start()
         self._readers.append(reader)
-        watcher = threading.Thread(
-            target=self._watch, args=(proc, started), daemon=True, name="mcsp-watch"
-        )
-        watcher.start()
-        # Wait (bounded) for the "Done" marker so the API can report truthfully.
-        deadline = time.time() + 180
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                break
-            for line in self._ring.tail(50):
-                if "Done (" in line and "help" in line:
-                    self._set_state("running")
-                    return {"state": "running", "pid": self._pid}
-            time.sleep(0.25)
-        if proc.poll() is None:
-            # Still alive but no Done yet: it may be a long first boot.
-            self._set_state("starting") if self._state == "starting" else None
-            return {"state": self._state, "pid": self._pid, "note": "readiness marker not yet seen"}
-        # Exited during start window
-        code = proc.returncode
-        self._set_state("error", f"process exited during startup (code {code})")
-        return {"state": "error", "exitCode": code}
+        # Everything appended from here on belongs to THIS process.
+        mark = self._ring.snapshot()
+        ready = threading.Event()      # set when THIS process reaches readiness
+        finished = threading.Event()   # set when THIS process exits
+        threading.Thread(
+            target=self._monitor_readiness,
+            args=(proc, epoch, mark, ready),
+            daemon=True,
+            name="mcsp-ready",
+        ).start()
+        threading.Thread(
+            target=self._watch,
+            args=(proc, started, epoch, ready, finished, mark),
+            daemon=True,
+            name="mcsp-watch",
+        ).start()
+        # Wait (bounded) for the readiness marker so the API can report
+        # truthfully — but wake up immediately if the process exits first. The
+        # monitor keeps watching past this point, so a long first boot still
+        # becomes "running" when it actually gets there.
+        deadline = time.time() + READY_TIMEOUT_S
+        while time.time() < deadline and not ready.is_set() and not finished.is_set():
+            time.sleep(0.05)
+        if proc.poll() is not None:
+            return {"state": "error", "exitCode": proc.returncode}
+        if ready.is_set():
+            return {"state": "running", "pid": self._pid}
+        return {
+            "state": self._state,
+            "pid": self._pid,
+            "note": "readiness marker not yet seen",
+        }
 
-    def _watch(self, proc: subprocess.Popen, started: float) -> None:
-        """Watch the child; on exit decide stopped vs error and maybe auto-restart."""
+    def _monitor_readiness(
+        self, proc: subprocess.Popen, epoch: int, mark: int, ready: threading.Event
+    ) -> None:
+        """Flip to running on the readiness line produced by *this* process."""
+        while True:
+            with self._lock:
+                if self._epoch != epoch or self._closed:
+                    return
+            if proc.poll() is not None:
+                return
+            for line in self._ring.since(mark):
+                if _is_ready_line(line):
+                    with self._lock:
+                        if self._epoch != epoch:
+                            return
+                        self._ready_epoch = epoch
+                    self._set_state("running")
+                    ready.set()
+                    return
+            time.sleep(0.25)
+
+    def _watch(
+        self,
+        proc: subprocess.Popen,
+        started: float,
+        epoch: int,
+        ready: threading.Event,
+        finished: threading.Event,
+        mark: int,
+    ) -> None:
+        """Watch one child process; on exit decide stopped vs startup-failure vs
+        runtime crash and maybe auto-restart."""
         code = proc.wait()
+        finished.set()
         with self._lock:
-            self._proc = None
-            self._pid = None
-        was_graceful = self._graceful_stop_seen or self._stop_requested
+            if self._epoch != epoch:
+                # Superseded by a newer process (restart): its watcher owns the
+                # state and the pid now. Touching them here is what used to mark
+                # a freshly restarted server as crashed/stopped and orphan it.
+                log.info("ignoring exit of superseded server process (pid %s)", proc.pid)
+                return
+            if self._proc is proc:
+                self._proc = None
+                self._pid = None
+            stop_requested = self._stop_requested
+            state = self._state
+        was_graceful = self._graceful_stop_seen or stop_requested
         tail = self._ring.tail(80)
         graceful_text = any("Stopping" in l or "Stopped" in l for l in tail)
-        if was_graceful or (code == 0 and graceful_text):
+        if was_graceful or (code == 0 and graceful_text) or state == "stopping":
             log.info("server stopped cleanly (code %s)", code)
             self._set_state("stopped")
             return
-        detail = f"process exited unexpectedly (code {code})"
-        log.warning(detail)
-        if self._state == "stopping":
-            # We asked for a stop; treat exit as success even if code != 0.
-            self._set_state("stopped")
+        uptime = time.time() - started
+        if not (ready.is_set() or self._ready_epoch == epoch):
+            self._report_startup_failure(proc, code, uptime, mark)
             return
+        self._report_crash(code, uptime, started)
+
+    def _report_startup_failure(
+        self, proc: subprocess.Popen, code: int | None, uptime: float, mark: int
+    ) -> None:
+        """The process died before it ever became ready: retrying cannot help."""
+        detail = f"server exited during startup (code {code}) after {uptime:.1f}s"
+        problem = self._provisioning_problem()
+        if problem:
+            detail += f"; {problem}"
+        output = self._last_output(mark)
+        if output:
+            detail += f"; last output: {output}"
+        log.error(detail)
+        self._ring.append(f"[mcsp] {detail}")
+        self._ring.append(
+            "[mcsp] not auto-restarting: the server never reached readiness, so the "
+            "same start would fail again. Fix the install/configuration and start it "
+            "again (see /api/v1/status + the console log above)."
+        )
         self._set_state("error", detail)
-        if self.settings.auto_restart:
-            with self._lock:
-                if self._auto_restart_count >= self.settings.auto_restart_max:
-                    log.warning("auto-restart limit reached; staying in error")
-                    self._ring.append("[mcsp] auto-restart limit reached; manual restart required")
-                    return
-                self._auto_restart_count += 1
-                attempt = self._auto_restart_count
-                delay = min(
-                    self.settings.auto_restart_backoff_s * (2 ** (attempt - 1)), 300
+
+    def _report_crash(self, code: int | None, uptime: float, started: float) -> None:
+        detail = f"process exited unexpectedly (code {code}) after {uptime:.1f}s"
+        log.warning(detail)
+        self._set_state("error", detail)
+        if not self.settings.auto_restart:
+            return
+        with self._lock:
+            if uptime >= self.settings.auto_restart_stable_s:
+                # It had been up long enough to count as healthy; fresh budget.
+                self._auto_restart_count = 0
+            if self._auto_restart_count >= self.settings.auto_restart_max:
+                log.warning("auto-restart limit reached; staying in error")
+                self._ring.append(
+                    f"[mcsp] auto-restart limit reached "
+                    f"({self.settings.auto_restart_max} attempts); manual restart required"
                 )
-            self._ring.append(
-                f"[mcsp] unexpected exit (code {code}); auto-restart attempt {attempt} in {delay}s"
-            )
-            t = threading.Thread(target=self._auto_restart, args=(delay,), daemon=True)
-            self._auto_restart_thread = t
-            t.start()
+                return
+            self._auto_restart_count += 1
+            attempt = self._auto_restart_count
+            delay = min(self.settings.auto_restart_backoff_s * (2 ** (attempt - 1)), 300)
+            self._restart_cancel.clear()
+        self._ring.append(
+            f"[mcsp] unexpected exit (code {code}); auto-restart attempt {attempt} in {delay}s"
+        )
+        t = threading.Thread(target=self._auto_restart, args=(delay,), daemon=True)
+        self._auto_restart_thread = t
+        t.start()
+
+    def _provisioning_problem(self) -> str | None:
+        """Why the managed server cannot start, according to the bootstrap."""
+        try:
+            return self.bootstrap.provisioning_problem()
+        except Exception:
+            log.exception("could not evaluate the server install")
+            return None
+
+    def _last_output(self, mark: int, limit: int = 3) -> str:
+        """The last few lines this process produced (its own, not a stale run's)."""
+        lines = [l.split("[server] ", 1)[-1].strip() for l in self._ring.since(mark)]
+        lines = [l for l in lines if l and not l.startswith("[mcsp]")]
+        return " | ".join(lines[-limit:])[:500]
 
     def _auto_restart(self, delay: float) -> None:
-        time.sleep(delay)
+        # An operator Stop during the backoff must win: it cancels the restart
+        # instead of letting the server come back to life and crash again.
+        if self._restart_cancel.wait(delay):
+            log.info("auto-restart cancelled (stop requested)")
+            return
         if self._closed:
             return
+        with self._lock:
+            if self._stop_requested:
+                log.info("auto-restart skipped: stop requested")
+                return
         try:
-            self.start()
+            self._start(manual=False)
         except Exception as e:
             log.error("auto-restart failed: %s", e)
 
     def stop(self, timeout: float = 45.0) -> dict:
         """Stop the managed server gracefully: stdin 'stop', then SIGTERM, SIGKILL."""
         with self._lock:
+            self._restart_cancel.set()  # a pending auto-restart must not resurrect it
             proc = self._proc
             if proc is None or proc.poll() is not None:
+                self._stop_requested = True
                 self._set_state("stopped")
                 return {"state": "stopped", "note": "server was not running"}
             self._stop_requested = True
@@ -310,7 +453,7 @@ class MinecraftServerSupervisor:
         state = self.state
         if state == "running" or state == "starting":
             self.stop()
-        result = self.start()
+        result = self._start(manual=True)
         # The freshly started server has loaded the current mod set; the flag
         # is now stale. (Kept in sync with the admin restart-ack endpoint.)
         try:
@@ -345,6 +488,7 @@ class MinecraftServerSupervisor:
     def close(self) -> None:
         """Shutdown hook: stop the managed server if we own it."""
         self._closed = True
+        self._restart_cancel.set()
         with self._lock:
             proc = self._proc
         if proc is not None:

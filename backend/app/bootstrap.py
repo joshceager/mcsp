@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import threading
@@ -54,7 +55,115 @@ class Bootstrap:
     # ------------------------------------------------------------------ state
 
     def is_provisioned(self) -> bool:
-        return (self.settings.server_dir / "run.sh").exists()
+        """True only when the install can actually be launched.
+
+        ``run.sh`` alone is NOT proof: the NeoForge installer writes the launch
+        scripts before it finishes patching the Minecraft jar, so an interrupted
+        install (container restarted, installer killed/timed out, no disk space)
+        leaves a tree that looks installed and can never start. FML then dies
+        with ``NoSuchElementException: No value present`` from
+        ``layer.findModule("minecraft").orElseThrow()`` — a crash loop whose
+        cause is invisible unless someone reads the console log.
+        """
+        return self.provisioning_problem() is None
+
+    def install_problem(self) -> str | None:
+        """Artifact-level completeness of the install tree (None = launchable).
+
+        Deliberately ignores the recorded version markers, so the installer can
+        verify its own output before those markers are written.
+        """
+        s = self.settings
+        if not (s.server_dir / "run.sh").exists():
+            return "the server is not installed yet"
+        missing = self.missing_launch_paths()
+        if missing:
+            more = f" (+{len(missing) - 1} more)" if len(missing) > 1 else ""
+            return (
+                "the existing server install is incomplete: the launch scripts "
+                f"reference {len(missing)} missing file(s), e.g. {missing[0]}{more}"
+            )
+        return None
+
+    def provisioning_problem(self) -> str | None:
+        """Why the managed server cannot be launched as installed (None = fine)."""
+        s = self.settings
+        if s.test_server_cmd is not None:
+            return None  # tests run a stub server; nothing to install
+        problem = self.install_problem()
+        if problem:
+            return problem
+        installed_mc = self.store.get_meta("installed_mc_version")
+        installed_nf = self.store.get_meta("installed_neoforge_version")
+        if installed_mc and installed_mc != s.mc_version:
+            return (
+                f"the installed Minecraft version ({installed_mc}) is not the "
+                f"requested one ({s.mc_version})"
+            )
+        if installed_nf and installed_nf != s.neoforge_version:
+            return (
+                f"the installed NeoForge version ({installed_nf}) is not the "
+                f"requested one ({s.neoforge_version})"
+            )
+        return None
+
+    # Files run.sh hands to the JVM with @, and jar paths listed inside them.
+    # Restricted to real argument files (.txt/.args/.json) so that prose in a
+    # comment ("@see ...") can never be mistaken for a missing launch file —
+    # a false positive here would re-run a 20-minute installer.
+    _ARG_REF = re.compile(r"@([^\s'\"]+\.(?:txt|args|json))")
+    _LIB_PATH = re.compile(r"libraries/[A-Za-z0-9_.+\-/$%]+?\.jar")
+
+    def launch_arg_files(self) -> list[Path]:
+        """The argument files run.sh passes to the JVM (relative to the server dir)."""
+        s = self.settings
+        out: list[Path] = []
+        run_sh = s.server_dir / "run.sh"
+        if not run_sh.exists():
+            return out
+        try:
+            text = run_sh.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return out
+        for ref in self._ARG_REF.findall(text):
+            p = Path(ref)
+            out.append(p if p.is_absolute() else s.server_dir / p)
+        return out
+
+    def missing_launch_paths(self) -> list[str]:
+        """Paths the launch scripts reference that are not on disk.
+
+        This is how an interrupted install is caught without hard-coding
+        artifact names: ``unix_args.txt`` lists the module path (including the
+        patched Minecraft jar that provides the ``minecraft`` module), so any
+        entry that does not exist means the launch cannot work.
+        """
+        s = self.settings
+        missing: list[str] = []
+        arg_files = self.launch_arg_files()
+        for ref in arg_files:
+            if not ref.exists():
+                try:
+                    missing.append(str(ref.relative_to(s.server_dir)))
+                except ValueError:
+                    missing.append(str(ref))
+        for ref in arg_files:
+            if not ref.exists():
+                continue
+            try:
+                text = ref.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for rel in self._LIB_PATH.findall(text):
+                if not (s.server_dir / rel).exists():
+                    missing.append(rel)
+        seen: set[str] = set()
+        out: list[str] = []
+        for m in missing:
+            if m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
 
     def ensure_java(self) -> Path:
         """Return a java executable path, downloading a JRE on demand.
@@ -138,11 +247,16 @@ class Bootstrap:
         ensure_dir(s.staging_dir)
         ensure_dir(s.backups_dir)
         ensure_dir(s.logs_dir)
-        if self.is_provisioned():
+        problem = self.provisioning_problem()
+        if problem is None:
             log.info("server already provisioned at %s", s.server_dir)
             return
+        if (s.server_dir / "run.sh").exists():
+            # Repair path: an interrupted/failed install is retried instead of
+            # being trusted forever because its launch script happens to exist.
+            log.warning("re-running the NeoForge installer: %s", problem)
         with self._install_lock:
-            if self.is_provisioned():
+            if self.provisioning_problem() is None:
                 return
             self._install_server()
 
@@ -174,9 +288,22 @@ class Bootstrap:
                 str(s.server_dir),
             ]
             log.info("running installer: %s", " ".join(cmd))
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=1200, cwd=str(s.server_dir)
-            )
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=s.install_timeout_s,
+                    cwd=str(s.server_dir),
+                )
+            except subprocess.TimeoutExpired as e:
+                raise internal(
+                    f"the NeoForge installer did not finish within "
+                    f"{s.install_timeout_s}s; the install is incomplete and will be "
+                    f"retried on the next start (raise MCSP_INSTALL_TIMEOUT_S on a "
+                    f"slow link)",
+                    "installer_timeout",
+                ) from e
             if proc.returncode != 0:
                 log.error("installer stderr tail: %s", proc.stderr[-2000:])
                 raise internal(
@@ -185,6 +312,15 @@ class Bootstrap:
                     stderr_tail=proc.stderr[-1000:],
                 )
             self._write_defaults()
+            # Trust nothing: a "successful" installer run that did not leave a
+            # launchable tree must fail loudly here instead of becoming a crash
+            # loop on every boot.
+            problem = self.install_problem()
+            if problem:
+                raise internal(
+                    f"the NeoForge installer exited 0 but {problem}",
+                    "install_incomplete",
+                )
             self.store.set_meta("installed_mc_version", s.mc_version)
             self.store.set_meta("installed_neoforge_version", s.neoforge_version)
             log.info("server install complete")
@@ -233,8 +369,18 @@ class Bootstrap:
                     "motd=MCSP managed server\n"
                 ).encode("utf-8"),
             )
+        # Memory: modern NeoForge run.sh contains no -Xmx at all — it sources
+        # user_jvm_args.txt — so patching run.sh alone silently did nothing and
+        # the JVM ran on its default heap (a classic OOM crash under load).
+        jvm_args = s.server_dir / "user_jvm_args.txt"
+        if jvm_args.exists():
+            text = jvm_args.read_text(encoding="utf-8", errors="replace")
+            kept = [l for l in text.splitlines() if not l.strip().startswith("-Xmx")]
+            kept.append(f"-Xmx{s.mem_gb}G")
+            atomic_write(jvm_args, ("\n".join(kept).rstrip() + "\n").encode("utf-8"))
         run_sh = s.server_dir / "run.sh"
         if run_sh.exists():
+            # Older Forge/NeoForge layouts put the heap straight in run.sh.
             text = run_sh.read_text(encoding="utf-8", errors="replace")
             patched = text.replace("-Xmx4096M", f"-Xmx{s.mem_gb * 1024}M")
             patched = patched.replace("-Xmx4G", f"-Xmx{s.mem_gb}G")

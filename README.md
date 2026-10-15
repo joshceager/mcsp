@@ -31,7 +31,17 @@ serves the REST API *and* supervises the real Minecraft server process.
 - Job queue: at most one mutating/lifecycle job runs at a time; overlapping
   admin requests are rejected with 409.
 - Server state machine: `starting -> running -> stopping -> stopped`, crash =>
-  `error` with auto-restart (capped backoff), all visible on `GET /status`.
+  `error`, all visible on `GET /status`. The two exits are handled differently
+  on purpose:
+  - a process that never reached readiness is a **startup failure** (broken
+    install/config): it is reported once, with the reason and the process's own
+    last output, and is *not* auto-restarted — retrying the same command cannot
+    fix it, and looping only buries the real error;
+  - a process that reached readiness and then died is a **runtime crash**:
+    auto-restarted with capped exponential backoff. The cap counts consecutive
+    crashes, and is only cleared by an operator start or after
+    `MCSP_AUTO_RESTART_STABLE_S` of uptime. An admin Stop cancels a pending
+    restart.
 
 ## Quick start (server owner)
 
@@ -47,7 +57,16 @@ docker compose up -d --build
 
 First boot provisions everything: downloads the pinned NeoForge server
 (Minecraft 1.21.1 / NeoForge 21.1.259), installs it, writes `eula.txt` +
-default `server.properties`, and auto-starts the server.
+default `server.properties`, applies `MCSP_MEM_GB` to `user_jvm_args.txt`, and
+auto-starts the server.
+
+The install is **verified, not assumed**, on every boot: the launch scripts are
+followed to the artifacts they reference, and a tree that cannot launch (an
+installer interrupted by a container restart, a timeout, or a full disk — FML
+then dies with `NoSuchElementException: No value present` from
+`layer.findModule("minecraft")`) is repaired by re-running the installer instead
+of being trusted because `run.sh` happens to exist. Changing
+`MCSP_MC_VERSION`/`MCSP_NEOFORGE_VERSION` reinstalls for the new versions.
 
 ```bash
 curl http://localhost:8080/api/v1/status    # public: state + join address
