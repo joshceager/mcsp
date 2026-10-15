@@ -8,6 +8,8 @@ export interface SavedConnection {
   adminKey: string;
 }
 export interface ClientSettings {
+  /** On-disk schema version (see main/services/store.ts). */
+  schemaVersion?: number;
   serverUrl: string;
   adminKey: string;
   gameDir: string;

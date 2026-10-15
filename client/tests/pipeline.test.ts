@@ -133,7 +133,7 @@ describe("connect-time backend validation (bug: any 200 URL was accepted)", () =
   it("surfaces a rejected admin key instead of silently unlocking", async () => {
     const { ApiClient } = await import("../src/main/services/api");
     const mk = (key: string) => new ApiClient(() => ({
-      serverUrl: secureBackend.base, adminKey: key, gameDir: "", playerName: "p",
+      schemaVersion: 2, serverUrl: secureBackend.base, adminKey: key, gameDir: "", playerName: "p",
       autoStartServer: false, connections: [], activeConnectionId: null,
     }));
     const bad = await mk("wrong").probeAdmin();

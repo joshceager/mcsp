@@ -9,7 +9,7 @@ import { randomUUID as uuid } from "crypto";
 import { ApiClient, ApiError, normalizeBaseUrl, verifyBackend } from "./services/api";
 import { Launcher } from "./services/launcher";
 import { ProvisionService, type ProvisionProgress, type ProvisionStep } from "./services/provision";
-import { SettingsStore, type ClientSettings, type SavedConnection } from "./services/store";
+import { SettingsStore, sanitizeSettingsPatch, type ClientSettings, type SavedConnection } from "./services/store";
 import { SyncEngine } from "./services/sync";
 import { McAuth } from "./services/auth";
 import { SseStream } from "./services/streams";
@@ -210,7 +210,9 @@ function stopStreams(connId: string): void {
 
 handle("settings:get", () => ({ settings: settingsStore.get(), security: settingsStore.security() }));
 handle("settings:set", async (_e, patch: Partial<ClientSettings>) => {
-  const s = await settingsStore.set(patch);
+  // Whitelist: the renderer owns the scalar preferences, the conn:* handlers
+  // own the connection list (they verify before persisting).
+  const s = await settingsStore.set(sanitizeSettingsPatch(patch));
   return { settings: s, security: settingsStore.security() };
 });
 
