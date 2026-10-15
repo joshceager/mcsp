@@ -3,7 +3,7 @@
 import { createHash } from "crypto";
 import { promises as fs } from "fs";
 import { join } from "path";
-import { downloadFile } from "./download";
+import { downloadFile } from "./net";
 import { planSync } from "../../shared/sync";
 import type { InstalledMod, Manifest, SyncPlan } from "../../shared/types";
 

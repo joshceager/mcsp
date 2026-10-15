@@ -138,7 +138,9 @@ def test_add_mod_writes_real_file(client, jar_server, tmp_path):
     assert any(e["modId"] == "create" and e["side"] == "both" for e in m["mods"])
     # Public pack endpoint reports the installed file too.
     pack = c.get("/api/v1/pack").json()
-    assert any(f["filename"] == jar.name for f in pack["installed"])
+    assert any(f["filename"] == jar.name for f in pack["installedFiles"])
+    # deprecated alias stays in sync for older clients
+    assert pack["installed"] == pack["installedFiles"]
 
 
 def test_update_mod_replaces_file(client, jar_server, tmp_path):

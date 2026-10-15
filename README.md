@@ -115,8 +115,12 @@ client fetches the manifest, plans a diff against the local instance, downloads
 mod files **directly from their original URLs** (hash-verified with sha1),
 skips `side=server` mods, and launches the pinned MC + NeoForge instance. Java
 is pulled automatically (Adoptium Temurin 21) on first run if missing. Admin
-users paste the server key; it is stored in the OS credential store via
-Electron `safeStorage` where available.
+users paste the server key. The client validates it against an admin endpoint
+before saving it, then encrypts it with Electron `safeStorage` (the OS
+credential store) **when one is available**. Where it is not — headless Linux
+without a keyring, for example — the key is written as plaintext in the
+settings JSON, which is created with `0600` permissions and says so in the
+Settings panel. Nothing is silently claimed to be keychain-protected.
 
 ## Repo layout
 

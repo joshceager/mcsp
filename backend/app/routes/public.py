@@ -23,6 +23,9 @@ def get_pack(request: Request):
     installed = request.app.state.packmgr.installed_files()
     return {
         "manifest": manifest.model_dump() if manifest else None,
+        # `installedFiles` is the canonical name (matches the client type);
+        # `installed` is kept as a deprecated alias for older clients.
+        "installedFiles": installed,
         "installed": installed,
         "restartRequired": bool((manifest.restartRequired if manifest else False)),
     }

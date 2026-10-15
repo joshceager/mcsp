@@ -6,8 +6,9 @@ Base path `/api/v1`. Errors: `{ "error": "<code>", "message": "...", "details": 
 - `GET /health` -> `{ ok, adminEnabled, state, ... }`
 - `GET /status` -> state machine + join address/ports + `restartRequired` +
   `pendingRestart` + installed loader versions.
-- `GET /pack` -> `{ manifest, installed, restartRequired }` (manifest per
-  docs/manifest.md; `installed` = actual files in the server's mods dir).
+- `GET /pack` -> `{ manifest, installedFiles, restartRequired }` (manifest per
+  docs/manifest.md; `installedFiles` = actual files in the server's mods dir.
+  `installed` is a deprecated alias of the same list, kept for old clients).
 - `GET /status/stream` (SSE) — status + job events.
 
 ## Admin (`Authorization: Bearer <key>`) — 503 fail-closed when no key set

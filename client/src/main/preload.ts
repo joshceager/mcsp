@@ -1,54 +1,97 @@
-/** Preload: the ONLY bridge between sandboxed renderer and main. */
+/** Preload: the ONLY bridge between the sandboxed renderer and main.
+ *  Main returns result envelopes; this unwraps them into clean promises so no
+ *  Electron IPC internals ever surface in user-facing text. */
 import { contextBridge, ipcRenderer } from "electron";
 
+interface Envelope<T> {
+  ok: boolean;
+  value?: T;
+  error?: { code: string; message: string; status?: number };
+}
+
+async function call<T>(channel: string, ...args: unknown[]): Promise<T> {
+  const res = (await ipcRenderer.invoke(channel, ...args)) as Envelope<T>;
+  if (res && res.ok) return res.value as T;
+  const err = new Error(res?.error?.message ?? "unknown error") as Error & { code?: string; status?: number };
+  err.code = res?.error?.code ?? "error";
+  err.status = res?.error?.status ?? 0;
+  throw err;
+}
+
+const EVENTS = [
+  "log",
+  "provision",
+  "server:status",
+  "server:job",
+  "server:log",
+  "stream:error",
+  "game:exit",
+] as const;
+type EventChannel = (typeof EVENTS)[number];
+
 const api = {
-  auth: {
-    status: () => ipcRenderer.invoke("auth:status"),
-    startLogin: () => ipcRenderer.invoke("auth:startLogin"),
-    loginStatus: () => ipcRenderer.invoke("auth:loginStatus"),
-    signOut: () => ipcRenderer.invoke("auth:signOut"),
+  settings: {
+    get: () => call<unknown>("settings:get"),
+    set: (patch: unknown) => call<unknown>("settings:set", patch),
   },
   connections: {
-    list: () => ipcRenderer.invoke("conn:list"),
-    save: (patch: unknown) => ipcRenderer.invoke("conn:save", patch),
-    delete: (id: string) => ipcRenderer.invoke("conn:delete", id),
-    select: (id: string) => ipcRenderer.invoke("conn:select", id),
-  },
-  settings: {
-    get: () => ipcRenderer.invoke("settings:get"),
-    set: (patch: unknown) => ipcRenderer.invoke("settings:set", patch),
+    list: () => call<unknown>("conn:list"),
+    verify: (payload: { serverUrl: string; adminKey?: string }) => call<unknown>("conn:verify", payload),
+    save: (patch: unknown) => call<unknown>("conn:save", patch),
+    delete: (id: string) => call<unknown>("conn:delete", id),
+    select: (id: string) => call<unknown>("conn:select", id),
   },
   server: {
-    health: () => ipcRenderer.invoke("api:health"),
-    status: () => ipcRenderer.invoke("api:status"),
-    pack: () => ipcRenderer.invoke("api:pack"),
-    logs: () => ipcRenderer.invoke("api:logs"),
-    console: (line: string) => ipcRenderer.invoke("api:console", line),
-    serverOp: (kind: "start" | "stop" | "restart") =>
-      ipcRenderer.invoke("api:serverOp", kind),
-    jobs: () => ipcRenderer.invoke("api:jobs"),
-    job: (id: string) => ipcRenderer.invoke("api:job", id),
-    restartAck: () => ipcRenderer.invoke("api:restartAck"),
-    addMod: (payload: unknown) => ipcRenderer.invoke("api:addMod", payload),
-    updateMod: (modId: string, payload: unknown) =>
-      ipcRenderer.invoke("api:updateMod", modId, payload),
-    removeMod: (modId: string) => ipcRenderer.invoke("api:removeMod", modId),
+    health: () => call<unknown>("api:health"),
+    status: () => call<unknown>("api:status"),
+    pack: () => call<unknown>("api:pack"),
+    logs: (limit?: number) => call<unknown>("api:logs", limit),
+    console: (line: string) => call<unknown>("api:console", line),
+    serverOp: (kind: "start" | "stop" | "restart") => call<unknown>("api:serverOp", kind),
+    jobs: (limit?: number) => call<unknown>("api:jobs", limit),
+    job: (id: string) => call<unknown>("api:job", id),
+    backups: () => call<unknown>("api:backups"),
+    restoreBackup: (id: string) => call<unknown>("api:restoreBackup", id),
+    restartAck: () => call<unknown>("api:restartAck"),
+    adminProbe: () => call<unknown>("api:adminProbe"),
+    probeKey: (key: string) => call<unknown>("api:probeKey", key),
+    addMod: (payload: unknown) => call<unknown>("api:addMod", payload),
+    updateMod: (modId: string, payload: unknown) => call<unknown>("api:updateMod", modId, payload),
+    removeMod: (modId: string) => call<unknown>("api:removeMod", modId),
+  },
+  stream: {
+    subscribe: (connId: string, logs = true) => call<unknown>("stream:subscribe", connId, logs),
+    unsubscribe: (connId?: string) => call<unknown>("stream:unsubscribe", connId),
   },
   sync: {
-    check: () => ipcRenderer.invoke("sync:check"),
-    apply: () => ipcRenderer.invoke("sync:apply"),
+    check: (connId?: string) => call<unknown>("sync:check", connId),
+    apply: (connId?: string) => call<unknown>("sync:apply", connId),
   },
   provision: {
-    ensure: () => ipcRenderer.invoke("provision:ensure"),
+    inspect: (connId?: string) => call<unknown>("provision:inspect", connId),
+    ensure: (connId?: string, steps?: string[]) => call<unknown>("provision:ensure", connId, steps),
+    command: (connId?: string) => call<unknown>("provision:command", connId),
   },
   launch: {
-    start: () => ipcRenderer.invoke("launch:start"),
-    stop: () => ipcRenderer.invoke("launch:stop"),
-    isRunning: () => ipcRenderer.invoke("launch:isRunning"),
+    start: (connId?: string) => call<unknown>("launch:start", connId),
+    stop: (connId?: string) => call<unknown>("launch:stop", connId),
+    status: (connId?: string) => call<unknown>("launch:status", connId),
   },
-  on: (channel: string, cb: (payload: unknown) => void) => {
-    if (channel !== "log") return;
-    ipcRenderer.on(channel, (_e, payload) => cb(payload));
+  auth: {
+    status: () => call<unknown>("auth:status"),
+    startLogin: () => call<unknown>("auth:startLogin"),
+    loginStatus: () => call<unknown>("auth:loginStatus"),
+    cancelLogin: () => call<unknown>("auth:cancelLogin"),
+    signOut: () => call<unknown>("auth:signOut"),
+  },
+  app: {
+    openExternal: (url: string) => call<unknown>("app:openExternal", url),
+  },
+  on: (channel: EventChannel, cb: (payload: unknown) => void) => {
+    if (!EVENTS.includes(channel)) return () => undefined;
+    const listener = (_e: unknown, payload: unknown) => cb(payload);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
   },
 };
 

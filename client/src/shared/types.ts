@@ -29,10 +29,37 @@ export interface Manifest {
   updatedAt?: string | null;
 }
 
+/** A file the backend actually has on disk in the server's mods/ dir. */
+export interface InstalledFile {
+  filename: string;
+  size: number;
+  modifiedAt: string;
+}
+
+export interface BackupView {
+  id: string;
+  path?: string;
+  size?: number;
+  createdAt?: string;
+  reason?: string;
+  [k: string]: unknown;
+}
+
 export interface PackView {
-  manifest: Manifest;
-  installedFiles: { filename: string; size: number; modifiedAt: string }[];
-  backups?: unknown[];
+  manifest: Manifest | null;
+  /** Backend field is `installedFiles` (older builds used `installed`). */
+  installedFiles: InstalledFile[];
+  installed?: InstalledFile[];
+  restartRequired?: boolean;
+}
+
+/** Result of probing a URL to confirm it is really an MCSP backend. */
+export interface ConnectVerify {
+  ok: boolean;
+  url: string;
+  adminEnabled: boolean;
+  version?: number | string;
+  service?: string;
 }
 
 export interface ServerStatus {

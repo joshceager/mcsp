@@ -20,32 +20,41 @@ def get_logs(request: Request, limit: int = 200):
 
 
 @router.get("/logs/stream")
-async def log_stream(request: Request):
+async def log_stream(request: Request, tail: int = 200):
+    """SSE stream of console lines.
+
+    The ring's ``wait`` is a *threading* primitive. Awaiting it inline runs the
+    wait inside the event loop and stalls every other request on the server for
+    as long as the call blocks, so it is always off-loaded to a worker thread.
+    """
     sup = request.app.state.supervisor
     import asyncio
-    import json
+
+    from sse_starlette.sse import EventSourceResponse
+
+    if tail < 1 or tail > 8000:
+        raise bad_request("tail must be between 1 and 8000")
 
     async def gen():
-        last_len = -1
+        lines = sup.logs(8000)
+        # first flush: only the most recent `tail` lines (never the whole ring)
+        for line in lines[-tail:]:
+            yield {"data": line}
+        last_len = len(lines)
         while True:
             if await request.is_disconnected():
                 break
+            await asyncio.to_thread(sup.wait_for_lines, 1.0)
+            if await request.is_disconnected():
+                break
             lines = sup.logs(8000)
-            if last_len == -1:
-                # first flush: send current tail
-                for i, l in enumerate(lines):
-                    yield {"data": l}
-                last_len = len(lines)
+            if len(lines) < last_len:
+                new = lines  # ring wrapped/reset
             else:
-                new = lines[last_len:] if len(lines) > last_len else []
-                if len(lines) < last_len:  # ring wrapped/reset
-                    new = lines
-                for l in new:
-                    yield {"data": l}
-                last_len = len(lines)
-            sup.wait_for_lines(1.0)
-
-    from sse_starlette.sse import EventSourceResponse
+                new = lines[last_len:]
+            for line in new:
+                yield {"data": line}
+            last_len = len(lines)
 
     return EventSourceResponse(gen())
 
