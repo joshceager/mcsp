@@ -243,7 +243,16 @@ class Bootstrap:
 
 
 class ManifestStore:
-    """Loads/saves the published pack manifest with atomic writes."""
+    """Loads/saves the published pack manifest with atomic writes.
+
+    The manifest is the backend's *own* document: it describes the pack, not the
+    state of the Minecraft install. So it is published from the very first
+    request, independently of provisioning — a deployment that has not published
+    one yet (fresh install, provisioning still running, provisioning failed) is
+    served the empty default pack instead of ``null``. Clients treat a missing
+    manifest as an invalid one and block sync/launch, so "nothing published yet"
+    must never look like a broken pack.
+    """
 
     def __init__(self, settings) -> None:
         self.settings = settings
@@ -256,13 +265,57 @@ class ManifestStore:
             return {}
         return data
 
+    def default_manifest(self) -> dict:
+        """The empty format-v1 pack every deployment starts from."""
+        from .models import LOADER, MANIFEST_FORMAT_VERSION
+
+        s = self.settings
+        return {
+            "formatVersion": MANIFEST_FORMAT_VERSION,
+            "loader": LOADER,
+            "loaderVersion": s.neoforge_version,
+            "minecraftVersion": s.mc_version,
+            "mods": [],
+            "restartRequired": False,
+        }
+
+    def ensure_default(self) -> None:
+        """Publish the default (empty) pack unless a manifest already exists."""
+        if self.path.exists():
+            return
+        ensure_dir(self.settings.pack_dir)
+        self.save(self.default_manifest())
+
     def load_manifest(self):
+        """The published manifest. Never ``None``.
+
+        A missing file is (re)published as the empty default pack, so ``GET /pack``
+        can never answer ``{"manifest": null}``. A file that exists but does not
+        parse/validate raises one clear, actionable error instead of a pydantic
+        traceback — and it is deliberately *not* replaced by the empty default,
+        because an empty manifest would make clients sweep their installed mods.
+        """
+        from .errors import internal
         from .models import Manifest
 
-        data = self.load()
-        if not data:
-            return None
-        return Manifest.model_validate(data)
+        if not self.path.exists():
+            log.warning("no pack manifest at %s; publishing the empty default pack", self.path)
+            self.ensure_default()
+        try:
+            return Manifest.model_validate(read_json(self.path))
+        except FileNotFoundError:
+            # Lost between the check and the read (e.g. an operator deleted it).
+            self.ensure_default()
+            return Manifest.model_validate(read_json(self.path))
+        except Exception as e:
+            log.exception("published pack manifest is unreadable: %s", self.path)
+            raise internal(
+                f"the published pack manifest at {self.path} is not a valid MCSP "
+                f"manifest ({e}); fix it or delete the file to republish the empty "
+                f"default pack",
+                "manifest_corrupt",
+                path=str(self.path),
+            )
 
     def save(self, manifest_dict: dict) -> None:
         manifest_dict["updatedAt"] = datetime.now(timezone.utc).isoformat()
@@ -270,20 +323,6 @@ class ManifestStore:
 
     def save_manifest(self, manifest) -> None:
         self.save(manifest.model_dump())
-
-    def ensure_default(self, settings) -> None:
-        if self.path.exists():
-            return
-        ensure_dir(settings.pack_dir)
-        empty = {
-            "formatVersion": 1,
-            "loader": "neoforge",
-            "loaderVersion": settings.neoforge_version,
-            "minecraftVersion": settings.mc_version,
-            "mods": [],
-            "restartRequired": False,
-        }
-        self.save(empty)
 
 
 def _extract_archive(archive: Path, dest: Path) -> None:

@@ -4,6 +4,12 @@ Custom format (no .mrpack anywhere, per project decision). The backend is the
 single source of truth; it publishes this file and keeps it consistent with
 the actual files in `server/mods/`.
 
+The backend publishes this file at startup — it describes the *pack*, so it does
+not wait for (and does not depend on) the Minecraft install. A deployment that
+has no manifest yet (fresh install, provisioning still running, or provisioning
+failed) is served the empty default pack below, never `null`, and clients read
+`manifest: null` as a corrupt pack.
+
 ```json
 {
   "formatVersion": 1,

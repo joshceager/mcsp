@@ -9,6 +9,13 @@ Base path `/api/v1`. Errors: `{ "error": "<code>", "message": "...", "details": 
 - `GET /pack` -> `{ manifest, installedFiles, restartRequired }` (manifest per
   docs/manifest.md; `installedFiles` = actual files in the server's mods dir.
   `installed` is a deprecated alias of the same list, kept for old clients).
+  - `manifest` is **always** a complete format-v1 manifest, including on a
+    deployment that has not published one yet (still provisioning, or its
+    provisioning failed): it then serves the empty default pack. It is never
+    `null` — clients can only read that as a corrupt pack and refuse to sync.
+  - A `manifest.json` that exists but does not parse/validate is reported as
+    `500 manifest_corrupt` with the path in `message`. It is not silently
+    replaced by an empty pack (that would make clients sweep their mods).
 - `GET /status/stream` (SSE) — status + job events.
 
 ## Admin (`Authorization: Bearer <key>`) — 503 fail-closed when no key set

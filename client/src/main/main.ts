@@ -354,6 +354,17 @@ handle("stream:unsubscribe", (_e, connId?: string) => {
 
 async function activeManifest() {
   const pack = await api.pack();
+  // A backend that has not published a pack yet answers `manifest: null`. That is
+  // "nothing to sync yet", not a corrupt manifest — say so, and point at the one
+  // place that can show why (the backend is probably still provisioning, or its
+  // provisioning failed; both are visible as the server state / in the logs).
+  if (pack.manifest === null || pack.manifest === undefined) {
+    throw new AppError(
+      "manifest_missing",
+      "this server has not published a pack manifest yet — it is probably still provisioning. " +
+        "Watch the server state and logs in Server admin, then try again.",
+    );
+  }
   const v = validateManifest(pack.manifest);
   if (!v.ok) throw new AppError("manifest_invalid", `the server's pack manifest is invalid: ${v.problems.join("; ")}`);
   return { pack, manifest: v.manifest! };

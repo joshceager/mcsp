@@ -68,6 +68,13 @@ async def _lifespan(app: FastAPI):
     app.state.bootstrap = bootstrap
     app.state.manifest_store = bootstrap.manifest_store
 
+    # Publish the pack manifest *now*, before the first request: it is the
+    # backend's own document (it describes the pack, not the install) and clients
+    # must never receive `manifest: null`, which they can only read as a corrupt
+    # pack. Provisioning (a slow, network-bound install that can also fail) must
+    # not gate it.
+    bootstrap.manifest_store.ensure_default()
+
     supervisor = MinecraftServerSupervisor(settings, bootstrap)
     app.state.supervisor = supervisor
     jobs = JobQueue(store)
@@ -93,10 +100,13 @@ async def _lifespan(app: FastAPI):
     def provision_and_autostart():
         try:
             bootstrap.ensure_provisioned()
-            bootstrap.manifest_store.ensure_default(settings)
             app.state.settings_ready = True
         except Exception:
             log.exception("provisioning failed; server will stay stopped")
+            # The pack stays published and servable even when the install failed:
+            # the reason is reported through /status + the logs, not by breaking
+            # every client-side pack operation.
+            bootstrap.manifest_store.ensure_default()
             supervisor._set_state("error", "initial provisioning failed; see backend logs")
             return
         if settings.auto_start and supervisor.state in ("stopped", "error"):

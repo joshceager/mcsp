@@ -18,16 +18,21 @@ def get_status(request: Request):
 @router.get("/pack")
 def get_pack(request: Request):
     """The published manifest: every mod with its REQUIRED side classification,
-    plus the actual files currently installed in the managed server's mods dir."""
+    plus the actual files currently installed in the managed server's mods dir.
+
+    `manifest` is always a complete, valid format-v1 manifest: a deployment that
+    has not published one yet is served the empty default pack (see
+    ManifestStore.load_manifest), never `null`.
+    """
     manifest = request.app.state.manifest_store.load_manifest()
     installed = request.app.state.packmgr.installed_files()
     return {
-        "manifest": manifest.model_dump() if manifest else None,
+        "manifest": manifest.model_dump(),
         # `installedFiles` is the canonical name (matches the client type);
         # `installed` is kept as a deprecated alias for older clients.
         "installedFiles": installed,
         "installed": installed,
-        "restartRequired": bool((manifest.restartRequired if manifest else False)),
+        "restartRequired": bool(manifest.restartRequired),
     }
 
 

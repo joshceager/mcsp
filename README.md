@@ -25,6 +25,9 @@ serves the REST API *and* supervises the real Minecraft server process.
   authorized mod operation downloads to staging, verifies sha1 + zip safety +
   loader marker, takes a tar.gz backup, applies atomically, then publishes the
   manifest. It is never metadata-only.
+- The pack manifest is published at startup, independently of provisioning, and
+  `GET /pack` always answers with a complete, valid manifest — a deployment that
+  has not published one yet serves the empty default pack instead of `null`.
 - Job queue: at most one mutating/lifecycle job runs at a time; overlapping
   admin requests are rejected with 409.
 - Server state machine: `starting -> running -> stopping -> stopped`, crash =>
